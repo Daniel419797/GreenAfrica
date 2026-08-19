@@ -1,48 +1,57 @@
 # GreenAfrica on Algorand
 
-This module adds Algorand as a second blockchain rail for GreenAfrica while keeping the existing Hedera implementation intact.
+Algorand is the only blockchain used by GreenAfrica.
 
-## Purpose
+The Algorand application is the authoritative on-chain layer for reverse vending machine registration, recycler accounting, bottle-deposit receipts, Green Points balances and redemptions.
 
-The Algorand application mirrors the core recycling accounting data needed for independent verification:
+## What is stored on-chain
 
-- register and activate reverse vending machines (RVMs)
-- register recycler Green IDs without requiring user wallets
-- record PET deposits and awarded Green Points
-- prevent duplicate recycling sessions
-- record reward redemptions
-- emit ARC-28 compatible events that indexers and analytics services can consume
+- active/inactive RVM registry
+- recycler Green IDs as opaque identifiers
+- lifetime PET counts
+- Green Points balances
+- unique recycling session IDs to prevent duplicate rewards
+- unique redemption IDs to prevent duplicate redemption
+- hashes of receipt/media payloads
+- ARC-28 compatible events for independent analytics and audit trails
 
-The application creator acts as the authorized writer. This matches GreenAfrica's existing model where the backend/RVM operator submits blockchain transactions on behalf of recyclers.
+Users do not need individual blockchain wallets. GreenAfrica uses a server-managed operator account to submit application calls after the RVM or webapp has authenticated the action.
 
 ## Architecture
 
 ```text
-RVM / camera
-    |
-    v
-rvm_api
-    |
-    +--------------------+
-    |                    |
-    v                    v
-Hedera              Algorand
-    |                    |
-    |              ARC-4 application
-    |              + ARC-28 events
-    |                    |
-    +----------+---------+
-               |
-               v
-       GreenAfrica webapp
-       + sponsor analytics
+Recycler
+   |
+   v
+Reverse vending machine / camera
+   |
+   v
+rvm_api + computer vision
+   |
+   | accepted recycling session
+   v
+GreenAfrica backend
+   |
+   v
+Algorand application
+   |-- RVM registry
+   |-- recycler points
+   |-- PET totals
+   |-- duplicate-session protection
+   |-- redemption accounting
+   `-- ARC-28 event logs
+   |
+   +-------------------+
+   |                   |
+   v                   v
+Algorand Indexer   Firebase / webapp
+   |                   |
+   `-------> sponsor and recycler dashboards
 ```
-
-Hedera can continue handling the currently deployed contract, HTS Green Points and HCS audit trail. Algorand provides an additional independently verifiable application state and event stream. A future production phase can also issue Green Points as an Algorand Standard Asset (ASA) if GreenAfrica wants rewards to exist natively on both chains.
 
 ## Smart contract
 
-`src/GreenAfrica.algo.ts` is an Algorand TypeScript smart contract compiled for the Algorand Virtual Machine (AVM) with PuyaTS.
+`src/GreenAfrica.algo.ts` is an Algorand TypeScript smart contract compiled for the Algorand Virtual Machine with PuyaTS.
 
 Core methods:
 
@@ -53,10 +62,11 @@ Core methods:
 - `redeemPoints(recyclerId, pointsToRedeem, redemptionId, destinationHash)`
 - `adjustPoints(recyclerId, delta, add)`
 - `getRecycler(recyclerId)`
+- `isRecyclerRegistered(recyclerId)`
 - `isRvmActive(rvmId)`
 - `isSessionRecorded(sessionId)`
 
-Sensitive information should be hashed before being supplied to the contract. Do not store phone numbers, email addresses or full media URLs directly on-chain.
+Sensitive user information must be hashed or kept off-chain. Do not put phone numbers, email addresses or full private media URLs directly in application state or event logs.
 
 ## Build
 
@@ -65,44 +75,42 @@ Requirements:
 - Node.js 22+
 - npm 10+
 
-Install and compile:
-
 ```bash
 cd algorand
 npm install
 npm run build
 ```
 
-The build generates TEAL and ARC application specifications under the `artifacts` output directory.
+The build writes the generated Algorand application artifacts to `algorand/artifacts`.
 
-You can also compile with AlgoKit:
+## Deployment sequence
 
-```bash
-algokit compile typescript src/GreenAfrica.algo.ts --out-dir artifacts
-```
+1. Compile and test the application on LocalNet.
+2. Deploy to Algorand TestNet.
+3. Register the GreenAfrica operator account and pilot RVMs.
+4. Set `ALGORAND_GREENAFRICA_APP_ID` in the webapp/backend environment.
+5. Run an end-to-end RVM deposit and confirm the ARC-28 event through an Indexer.
+6. Test duplicate-session rejection and reward redemption.
+7. Move to MainNet after operational and reconciliation tests pass.
 
-## Deployment plan
-
-1. Start on Algorand LocalNet and compile the contract.
-2. Run contract tests for RVM registration, duplicate-session protection, deposits and redemptions.
-3. Deploy the application to Algorand TestNet.
-4. Store the resulting application ID as `ALGORAND_GREENAFRICA_APP_ID` in the server environment.
-5. Add an operator signer in the backend/RVM service.
-6. Dual-write each accepted recycling receipt to Hedera and Algorand using the same `sessionId` and receipt hash.
-7. Query Algorand Indexer for sponsor dashboards and cross-chain reconciliation.
-8. Move to MainNet only after reconciliation and failure-handling tests pass.
-
-## Recommended environment variables
+## Server environment
 
 ```bash
 ALGORAND_NETWORK=testnet
-ALGORAND_ALGOD_URL=
-ALGORAND_ALGOD_TOKEN=
-ALGORAND_INDEXER_URL=
-ALGORAND_INDEXER_TOKEN=
-ALGORAND_OPERATOR_MNEMONIC=
 ALGORAND_GREENAFRICA_APP_ID=
-ALGORAND_GREENPOINTS_ASSET_ID=
+GREENAFRICA_OPERATOR_MNEMONIC=
+
+# Optional custom endpoints. If omitted, AlgoKit network defaults are used.
+ALGOD_SERVER=
+ALGOD_PORT=
+ALGOD_TOKEN=
+INDEXER_SERVER=
+INDEXER_PORT=
+INDEXER_TOKEN=
 ```
 
-Keep `ALGORAND_OPERATOR_MNEMONIC` server-side only. Never expose it through `NEXT_PUBLIC_*` variables.
+`GREENAFRICA_OPERATOR_MNEMONIC` is server-only secret material. Never expose it using `NEXT_PUBLIC_*` variables.
+
+## Green Points asset
+
+The current application maintains Green Points as application accounting state. If transferable Green Points are needed later, they can be represented by an Algorand Standard Asset and integrated without changing the recycling receipt model.
