@@ -1,0 +1,48 @@
+name: Algorand TestNet deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-and-prove:
+    name: Deploy and prove RVM flow
+    runs-on: ubuntu-latest
+    env:
+      ALGORAND_NETWORK: testnet
+      GREENAFRICA_OPERATOR_MNEMONIC: ${{ secrets.GREENAFRICA_OPERATOR_MNEMONIC }}
+      ALGOKIT_DISPENSER_ACCESS_TOKEN: ${{ secrets.ALGOKIT_DISPENSER_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check deployment secret
+        run: |
+          if [ -z "$GREENAFRICA_OPERATOR_MNEMONIC" ]; then
+            echo "Missing repository secret GREENAFRICA_OPERATOR_MNEMONIC"
+            exit 1
+          fi
+      - name: Install Algorand dependencies
+        working-directory: algorand
+        run: npm install
+      - name: Run tests before deployment
+        working-directory: algorand
+        run: npm test
+      - name: Deploy to TestNet and submit proof deposit
+        id: deploy
+        working-directory: algorand
+        run: npm run deploy:testnet
+      - name: Upload TestNet deployment proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: greenafrica-testnet-proof
+          path: algorand/artifacts/testnet-deployment.json
+          if-no-files-found: error
+      - name: Summary
+        run: |
+          echo "### GreenAfrica Algorand TestNet" >> "$GITHUB_STEP_SUMMARY"
+          echo "App ID: ${{ steps.deploy.outputs.app_id }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Proof deposit tx: ${{ steps.deploy.outputs.deposit_tx_id }}" >> "$GITHUB_STEP_SUMMARY"
