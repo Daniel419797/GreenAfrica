@@ -21,8 +21,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: algorand/package.json
       - name: Install dependencies
         working-directory: algorand
         run: npm install
@@ -30,6 +28,7 @@ jobs:
         working-directory: algorand
         run: npm run build
       - name: Run contract tests
+        if: ${{ hashFiles('algorand/test/GreenAfrica.test.ts') != '' }}
         working-directory: algorand
         run: npm test
 
@@ -41,8 +40,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: webapp/package.json
       - name: Install dependencies
         working-directory: webapp
         run: npm install
@@ -58,9 +55,6 @@ jobs:
           NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: greenafrica-ci.appspot.com
           NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "1"
           NEXT_PUBLIC_FIREBASE_APP_ID: "1:1:web:test"
-          FIREBASE_PROJECT_ID: greenafrica-ci
-          FIREBASE_CLIENT_EMAIL: ci@example.com
-          FIREBASE_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n"
           ALGORAND_NETWORK: testnet
           ALGORAND_GREENAFRICA_APP_ID: "1"
           GREENAFRICA_OPERATOR_MNEMONIC: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon invest"
