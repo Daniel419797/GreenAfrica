@@ -96,7 +96,7 @@ jobs:
         run: npm run lint
 
   rvm-api:
-    name: RVM API syntax
+    name: RVM API tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -109,3 +109,6 @@ jobs:
       - name: Compile Python sources
         working-directory: rvm_api
         run: python -m compileall -q app main.py
+      - name: Run unit tests
+        working-directory: rvm_api
+        run: python -m unittest discover -s tests -v
