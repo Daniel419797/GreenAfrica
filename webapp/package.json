@@ -1,18 +1,17 @@
 {
   "name": "greenafrica-rvm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
-    "register-rvm": "tsx scripts/register-rvm-ifitness.ts",
-    "test-hybrid": "tsx scripts/test-hybrid-implementation.ts"
+    "register-rvm": "tsx scripts/register-rvm-ifitness.ts"
   },
   "dependencies": {
-    "@hashgraph/sdk": "^2.73.2",
-    "ethers": "^6.15.0",
+    "@algorandfoundation/algokit-utils": "^9.2.0",
+    "algosdk": "^3.0.0",
     "firebase": "^12.2.1",
     "firebase-admin": "^13.5.0",
     "leaflet": "^1.9.4",

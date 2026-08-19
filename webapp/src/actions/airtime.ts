@@ -1,20 +1,25 @@
 'use server';
 
-import { 
+import {
   createRedemptionRequestAdmin,
   updateRedemptionStatusAdmin,
   addTransactionAdmin,
   getUserAdmin,
-  updateUserAdmin
+  updateUserAdmin,
 } from '@/lib/firebase/admin-firestore';
+import {
+  adjustPointsForUser,
+  burnPointsForUser,
+  getUserPointsFromBlockchain,
+} from '@/actions/greenpoints';
 import { detectNetwork, formatPhoneNumber, isValidNigerianPhone } from '@/lib/utils/phone';
 import { FieldValue } from 'firebase-admin/firestore';
 
 export interface AirtimeRedemptionRequest {
   userId: string;
   phone: string;
-  amount: number; // Amount in naira (1:1 with points)
-  network?: string; // Manual override for network
+  amount: number;
+  network?: string;
 }
 
 export interface AirtimeRedemptionResult {
@@ -43,41 +48,27 @@ interface TeqillaAPIResponse {
   recipient?: string;
 }
 
-/**
- * Generate unique reference for Teqilla API
- */
 function generateReference(): string {
   const timestamp = Date.now();
   const random = Math.floor(Math.random() * 1000);
   return `TEQ_${timestamp}_${random}`;
 }
 
-/**
- * Validate airtime redemption request
- */
 function validateRedemptionRequest(request: AirtimeRedemptionRequest): {
   valid: boolean;
   error?: string;
 } {
   const { userId, phone, amount, network } = request;
 
-  if (!userId) {
-    return { valid: false, error: 'User ID is required' };
-  }
-
-  if (!phone) {
-    return { valid: false, error: 'Phone number is required' };
-  }
-
+  if (!userId) return { valid: false, error: 'User ID is required' };
+  if (!phone) return { valid: false, error: 'Phone number is required' };
   if (!isValidNigerianPhone(phone)) {
     return { valid: false, error: 'Invalid Nigerian phone number' };
   }
-
   if (!amount || amount < 50 || amount > 5000) {
     return { valid: false, error: 'Amount must be between ₦50 and ₦5000' };
   }
 
-  // If manual network is provided, validate it
   if (network) {
     const validNetworks = ['MTN', 'GLO', 'AIRTEL', '9MOBILE', 'NTEL'];
     if (!validNetworks.includes(network.toUpperCase())) {
@@ -88,15 +79,12 @@ function validateRedemptionRequest(request: AirtimeRedemptionRequest): {
   return { valid: true };
 }
 
-/**
- * Call Teqilla API for airtime purchase
- */
 async function callTeqillaAPI(
   provider: string,
   reference: string,
   recipient: string,
   amount: number,
-  userMetadata: { uid: string; name: string }
+  userMetadata: { uid: string; name: string },
 ): Promise<{
   success: boolean;
   data?: TeqillaAPIResponse;
@@ -126,32 +114,27 @@ async function callTeqillaAPI(
     });
 
     const data = await response.json();
-
     if (response.ok && data.success) {
       return { success: true, data: data.data };
-    } else {
-      return { 
-        success: false, 
-        error: data.message || data.data || 'Airtime purchase failed' 
-      };
     }
+
+    return {
+      success: false,
+      error: data.message || data.data || 'Airtime purchase failed',
+    };
   } catch (error) {
     console.error('Teqilla API call failed:', error);
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : 'Network error' 
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Network error',
     };
   }
 }
 
-/**
- * Process airtime redemption
- */
 export async function redeemAirtime(
-  request: AirtimeRedemptionRequest
+  request: AirtimeRedemptionRequest,
 ): Promise<AirtimeRedemptionResult> {
   try {
-    // Validate request
     const validation = validateRedemptionRequest(request);
     if (!validation.valid) {
       return {
@@ -165,7 +148,6 @@ export async function redeemAirtime(
     const formattedPhone = formatPhoneNumber(phone);
     const detectedNetwork = detectNetwork(formattedPhone);
 
-    // Determine which network to use
     let finalNetwork: string;
     if (manualNetwork) {
       finalNetwork = manualNetwork.toUpperCase();
@@ -176,11 +158,9 @@ export async function redeemAirtime(
         success: false,
         message: 'Unable to detect network. Please select network manually.',
         error: 'Network detection failed',
-        detectedNetwork: undefined,
       };
     }
 
-    // Get user data
     const user = await getUserAdmin(userId);
     if (!user) {
       return {
@@ -190,17 +170,24 @@ export async function redeemAirtime(
       };
     }
 
-    // Check if user has enough points (1:1 conversion)
     const requiredPoints = amount;
-    if (user.totalPoints < requiredPoints) {
+    const blockchainBalance = await getUserPointsFromBlockchain(userId);
+    if (!blockchainBalance.success || blockchainBalance.balance === undefined) {
       return {
         success: false,
-        message: 'Insufficient points',
-        error: `You need ${requiredPoints} points but only have ${user.totalPoints}`,
+        message: 'Unable to verify Green Points balance on Algorand',
+        error: blockchainBalance.error || 'Algorand balance unavailable',
       };
     }
 
-    // Create initial redemption request
+    if (BigInt(blockchainBalance.balance) < BigInt(requiredPoints)) {
+      return {
+        success: false,
+        message: 'Insufficient points',
+        error: `You need ${requiredPoints} points but only have ${blockchainBalance.balance}`,
+      };
+    }
+
     const redemptionData = {
       userId,
       type: 'airtime' as const,
@@ -214,26 +201,38 @@ export async function redeemAirtime(
 
     const redemptionId = await createRedemptionRequestAdmin(redemptionData);
 
-    // Generate reference for API call
+    // Reserve the value on the authoritative Algorand balance before asking
+    // the external airtime provider to fulfill the purchase.
+    const burnResult = await burnPointsForUser(
+      userId,
+      requiredPoints,
+      'airtime',
+      formattedPhone,
+      redemptionId,
+    );
+
+    if (!burnResult.success) {
+      await updateRedemptionStatusAdmin(redemptionId, 'failed', {
+        failureReason: burnResult.error || 'Algorand redemption failed',
+      });
+      return {
+        success: false,
+        message: 'Unable to reserve Green Points on Algorand',
+        error: burnResult.error,
+        redemptionId,
+      };
+    }
+
     const reference = generateReference();
-
-    // Prepare user metadata for API call
-    const userMetadata = {
-      uid: user.uid,
-      name: user.displayName,
-    };
-
-    // Call Teqilla API
     const apiResult = await callTeqillaAPI(
       finalNetwork,
       reference,
       formattedPhone,
       amount,
-      userMetadata
+      { uid: user.uid, name: user.displayName },
     );
 
     if (apiResult.success && apiResult.data) {
-      // API call successful - update redemption status
       await updateRedemptionStatusAdmin(redemptionId, 'completed', {
         transactionId: apiResult.data.reference,
         apiResponse: {
@@ -246,12 +245,11 @@ export async function redeemAirtime(
         },
       });
 
-      // Deduct points from user
+      // Firestore mirrors the authoritative Algorand balance for UI speed.
       await updateUserAdmin(userId, {
         totalPoints: FieldValue.increment(-requiredPoints),
       });
 
-      // Add transaction record (negative amount for redemption)
       await addTransactionAdmin({
         userId,
         type: 'redeemed',
@@ -262,6 +260,7 @@ export async function redeemAirtime(
           redemptionId,
           network: finalNetwork,
           apiReference: apiResult.data.reference,
+          algorandTransactionId: burnResult.transactionHash,
         },
       });
 
@@ -280,27 +279,34 @@ export async function redeemAirtime(
           provider: finalNetwork,
         },
       };
-    } else {
-      // API call failed - update redemption status
-      const failureReason = apiResult.error || 'Unknown error';
-      await updateRedemptionStatusAdmin(redemptionId, 'failed', {
-        failureReason,
-        apiResponse: {
-          errorMessage: failureReason,
-          provider: finalNetwork,
-        },
-      });
-
-      // Don't refund points for failed transactions as per requirements
-      return {
-        success: false,
-        message: 'Airtime redemption failed',
-        error: failureReason,
-        failureReason,
-        redemptionId,
-        detectedNetwork: detectedNetwork?.name,
-      };
     }
+
+    const failureReason = apiResult.error || 'Unknown error';
+
+    // The airtime provider did not fulfill the purchase, so restore the
+    // user's Algorand points. The failed redemption remains auditable by its
+    // unique redemption ID while the compensating adjustment restores value.
+    const refundResult = await adjustPointsForUser(userId, requiredPoints, true);
+    const refundSuffix = refundResult.success
+      ? ''
+      : `; Algorand refund failed: ${refundResult.error || 'unknown error'}`;
+
+    await updateRedemptionStatusAdmin(redemptionId, 'failed', {
+      failureReason: `${failureReason}${refundSuffix}`,
+      apiResponse: {
+        errorMessage: failureReason,
+        provider: finalNetwork,
+      },
+    });
+
+    return {
+      success: false,
+      message: 'Airtime redemption failed',
+      error: `${failureReason}${refundSuffix}`,
+      failureReason,
+      redemptionId,
+      detectedNetwork: detectedNetwork?.name,
+    };
   } catch (error) {
     console.error('Unexpected error in airtime redemption:', error);
     return {

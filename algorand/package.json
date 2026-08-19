@@ -1,0 +1,14 @@
+{
+  "name": "greenafrica-algorand",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "puya-ts build src/GreenAfrica.algo.ts --out-dir artifacts"
+  },
+  "devDependencies": {
+    "@algorandfoundation/algorand-typescript": "^1.1.0",
+    "@algorandfoundation/puya-ts": "^1.1.0",
+    "typescript": "^5.0.0"
+  }
+}

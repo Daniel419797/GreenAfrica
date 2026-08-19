@@ -1,112 +1,206 @@
 # GreenAfrica
 
-## Hedera Certification
-
-https://drive.google.com/file/d/1J5dpu8Mr0HWa4Uu2BkdkySVCzppRWVx4/view
-
-## Pitch Deck
-
-https://drive.google.com/file/d/1A5GV2dYkhUOWdbIoe0DIInnNxrAwEQ_r/view
-
-**Track:** DLT for Operations  
-**Sub-track**: 4, Sustainability & Impact Tech
-
-GreenAfrica turns reverse vending machines deployed across African cities into digitally verifiable recycling stations, pairing real-world bottle recovery with instant, tokenized rewards backed by Hedera's low-cost, high-trust infrastructure.
+GreenAfrica turns reverse vending machines deployed across African cities into digitally verifiable recycling stations. People deposit PET bottles, the machine verifies the recycling event, and the platform awards Green Points that can be redeemed for airtime or data. Algorand provides the project's blockchain verification and reward-accounting layer.
 
 ## Vision & Impact
 
-GreenAfrica's vision is to unlock a circular economy where every PET bottle keeps residual value and local recyclers earn reliable income without friction. We couple rugged reverse vending machines with a Hedera-backed loyalty layer so municipalities, FMCGs, and telecoms can co-fund incentives while seeing tamper-proof performance data.
+GreenAfrica's goal is to build a practical circular economy where PET bottles retain residual value and local recyclers receive reliable incentives without needing to understand blockchain technology.
 
-- Reduce plastic leakage by rewarding deposit behavior exactly where waste is generated (bus parks, markets, campuses).
-- Provide micro-earnings denominated as Green Points that convert into airtime/data bundles, smoothing household cash flow.
-- Deliver audit-ready climate impact evidence so grants and ESG budgets translate into transparent, measurable outcomes.
+- Reward recycling at bus parks, markets, campuses and other high-traffic locations.
+- Give recyclers Green Points that can be redeemed for airtime and data.
+- Produce tamper-evident recycling records for municipalities, FMCGs, sponsors, grant providers and ESG teams.
+- Keep blockchain complexity behind the platform so recyclers do not need individual crypto wallets.
+- Use unique on-chain session IDs and hashed receipts to make recycling activity independently verifiable.
 
 ## Monorepo Overview
 
-| Folder     | Role in platform                                                                                  | Primary stack                         | Notable outputs                                                        |
-| ---------- | ------------------------------------------------------------------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------- |
-| `contract` | Solidity smart contracts for RVM registry, deposits, referrals, and redemptions                   | Hardhat, Solidity 0.8                 | GreenAfrica.sol bytecode, contract ABIs, deployment scripts            |
-| `rvm_api`  | Edge service that runs on the vending machine, detects bottles, and orchestrates reward issuance  | FastAPI, OpenCV, WebSockets           | Computer-vision event stream, QR code payloads, operator dashboard API |
-| `rvm`      | Technician-facing mobile interface for provisioning RVMs and supervising sessions                 | Expo Router, React Native, TypeScript | Device onboarding flows, maintenance tools                             |
-| `webapp`   | Consumer web experience for recyclers to view their impact, redeem rewards, and onboard referrals | Next.js 15, Tailwind, Firebase        | Responsive dashboard, reward flows, analytics                          |
-| `website`  | Public marketing site — home, how it works, brands, partners, technology, about, contact          | Astro, Tailwind CSS v4                | Static site in `website/dist`                                          |
+| Folder | Role | Primary stack |
+| --- | --- | --- |
+| `algorand` | Algorand application for RVM registry, deposits, Green Points and redemptions | Algorand TypeScript, PuyaTS, ARC-4 |
+| `rvm_api` | Edge service that detects accepted bottles and emits recycling events | FastAPI, OpenCV, WebSockets |
+| `rvm` | Technician-facing mobile interface for provisioning and supervising machines | Expo Router, React Native, TypeScript |
+| `webapp` | Recycler dashboard, referrals and reward redemption | Next.js 15, Tailwind, Firebase, AlgoKit Utils |
+| `website` | Public marketing site | Astro, Tailwind CSS v4 |
 
-### Operational Flow
+## Architecture
 
-![Archtecture Diagram](/achitecture-diagram.png)
-`GreenAfrica Archtecture Diagram`
+```text
+Recycler
+   |
+   v
+Reverse vending machine
+   |
+   v
+Camera + OpenCV verification
+   |
+   v
+rvm_api
+   |
+   | accepted recycling session
+   v
+GreenAfrica backend
+   |
+   v
+Algorand application
+   |-- RVM registration / activation
+   |-- recycler registration
+   |-- PET totals
+   |-- Green Points accounting
+   |-- duplicate-session protection
+   |-- redemption accounting
+   `-- ARC-28 event logs
+   |
+   +-----------------------+
+   |                       |
+   v                       v
+Algorand Indexer       Firebase
+   |                       |
+   `----------+------------'
+              |
+              v
+       Next.js webapp
+              |
+              v
+     Recycler + sponsor views
+```
 
-1. The vending machine runs the `rvm_api`, which watches the region of interest on camera and emits bottle acceptance events with QR codes and session metadata.
-2. Accepted events trigger on-board logic that mints Green Points and calls the Hedera smart contract via secure operator keys, anchoring deposit details (RVM, recycler, location, media hash).
-3. A hashed summary of each deposit is also published to a Hedera Consensus Service topic for immutable compliance trails and third-party verification.
-4. The Next.js webapp consumes both the contract state (Green Points balance, lifetime PET count) and the consensus topic feed via Mirror Node, presenting live dashboards to recyclers and sponsors.
-5. Referral payouts and airtime/data redemptions are executed as atomic contract transactions, with fulfillment receipts returned to Firebase for messaging and CRM automation.
+## Operational Flow
 
-### Key On-Chain Records
+1. The reverse vending machine camera observes the bottle-entry region.
+2. `rvm_api` uses computer vision to determine whether a bottle has been accepted.
+3. The accepted session is assigned a unique session ID and a receipt/media payload is hashed before blockchain submission.
+4. The GreenAfrica backend submits an Algorand application call using a server-managed operator account.
+5. The Algorand application validates that the RVM is active, rejects duplicate session IDs, updates PET totals and awards Green Points.
+6. ARC-28 compatible events expose recycling activity for Indexer-based analytics and independent verification.
+7. Firebase stores user-facing profile, notification and transaction-cache data for the web and mobile experiences.
+8. Reward redemptions deduct Green Points in the Algorand application before the off-chain airtime/data fulfillment flow completes.
 
-- RVM registry with coordinates and activation status for every deployed machine.
-- Recycler profiles keyed by hashed identifiers, including referral codes and lifetime statistics.
-- Deposit, referral, and redemption events emitted with rich indexing to support Mirror Node analytics and ESG reporting.
+## Algorand Application
 
-### Analytics & Monitoring
+The on-chain application lives at:
 
-- Mirror Node queries surface bottle counts, points issued, and redemption latency per location.
-- Firebase/Firestore stores user-facing state and acts as notification bus.
-- Telemetry from `rvm_api` (QR scans, event latency) is surfaced to judges through Grafana-ready JSON endpoints.
+`algorand/src/GreenAfrica.algo.ts`
 
-## Hedera Integration Summary
+It supports:
 
-### Hedera Smart Contract Service
+- `registerRvm(rvmId)`
+- `setRvmActive(rvmId, active)`
+- `registerRecycler(recyclerId)`
+- `recordDeposit(recyclerId, rvmId, petCount, pointsAwarded, sessionId, receiptHash)`
+- `redeemPoints(recyclerId, pointsToRedeem, redemptionId, destinationHash)`
+- `adjustPoints(recyclerId, delta, add)`
+- `getRecycler(recyclerId)`
+- `isRecyclerRegistered(recyclerId)`
+- `isRvmActive(rvmId)`
+- `isSessionRecorded(sessionId)`
 
-We deployed the GreenAfrica RVM Registry contract (`0.0.6779400`) on the Hedera Smart Contract Service to enforce business logic around deposits, referrals, and redemptions in a single atomic call. Contract execution gives us deterministic settlement with ABFT finality, and the predictable ~$0.0003 `ContractExecuteTransaction` fee lets us log tens of thousands of daily deposits without eroding razor-thin recycling margins.
+The application uses box-backed state for RVMs, recycler balances, PET totals, deposit-session deduplication and redemption deduplication. Sensitive user data stays off-chain; identifiers and private destinations should be represented by opaque values or hashes.
 
-### Hedera Token Service
+## Green Points
 
-Green Points (`0.0.6919030`) is an HTS token that represents off-chain value such as airtime or data bundles. The Token Service supplies treasury controls, automatic KYC-less associations, and batched transfers so we can mint reward inventory once (`TokenCreateTransaction` + `TokenMintTransaction`) and stream micro-awards at ~$0.0001 per `TransferTransaction`, making incentive distribution viable across low-income communities.
+Green Points are currently accounted for directly in the Algorand application. They represent redeemable platform value such as airtime or data.
 
-### Hedera Consensus Service
+This keeps the first production model simple:
 
-We broadcast hashed deposit receipts to a dedicated HCS topic so sponsors and regulators can independently verify activity through Mirror Node. Submitting each payload with `TopicMessageSubmitTransaction` costs roughly $0.0001, yet gives us immutable sequencing and a tamper-evident timeline of machine uptime, enabling SLA enforcement and trust for grant-funded deployments.
+```text
+accepted bottle
+      |
+      v
+recordDeposit()
+      |
+      +--> PET total increases
+      |
+      `--> Green Points balance increases
+```
 
-## Hedera Transaction Types
+A later version can represent transferable Green Points with an Algorand Standard Asset if the product requires user-held or sponsor-transferable tokens.
 
-- `TokenCreateTransaction` — one-off creation of the Green Points HTS token treasury.
-- `TokenMintTransaction` — periodic top-ups of the reward pool when sponsorship funds refresh.
-- `TransferTransaction` — distribution of Green Points to recyclers and referral accounts.
-- `ContractExecuteTransaction` — invoking `recordDeposit`, `redeemPoints`, and admin functions on the GreenAfrica contract.
-- `ContractCallQuery` — reading user balances and machine state for dashboards without consuming gas.
-- `TopicMessageSubmitTransaction` — anchoring hashed deposit receipts and operational alerts on HCS for third-party monitoring.
+## Verification & Analytics
 
-## Economic Justification
+Algorand event logs and Indexer data can support:
 
-- Hedera's fixed micro-fees keep the per-bottle blockchain cost under $0.0005, preserving more than 99% of sponsorship budgets for user rewards instead of infrastructure.
-- Finality in ~5 seconds with ABFT security allows airtime and data rewards to settle instantly, increasing user trust and daily active recycling sessions.
-- High throughput and native tokenization eliminate the need for custodial intermediaries, reducing compliance overhead and simplifying expansion into new African markets.
+- bottle counts by machine and period
+- points awarded and redeemed
+- RVM activation status
+- duplicate-session detection
+- hashed receipt verification
+- sponsor campaign reporting
+- ESG and grant reporting
 
-## Setup Instructions (Web App)
+Firebase remains the user experience and messaging layer, not the authoritative blockchain ledger.
 
-- **Clone this monorepo:** then `cd greenafrica`.
-- **Install web dependencies:** `cd webapp && npm install`.
-- **Create environment file:** `cp .env.example .env.local`.
-- **Configure Firebase:** set all `NEXT_PUBLIC_FIREBASE_*`, `FIREBASE_PRIVATE_KEY`, and `FIREBASE_CLIENT_EMAIL` values with your Firebase project credentials.
-- **Configure Hedera access:** set `HEDERA_NETWORK=testnet`, point `HEDERA_RPC_URL` to a testnet endpoint (e.g. `https://testnet.hashio.io/api`), and provide operator `HEDERA_OPERATOR_ID`/`HEDERA_OPERATOR_KEY`.
-- **Link project contracts:** ensure `GREEN_AFRICA_CONTRACT_ID` and `GREENPOINTS_TOKEN_ID` reflect the desired testnet deployments.
-- **Run the dev server:** `npm run dev`, then open `http://localhost:3000` to interact with the Hedera testnet-backed dashboard.
+## Web App Setup
 
-## Hedera Testnet Contracts
+```bash
+cd webapp
+npm install
+npm run dev
+```
 
-- GreenAfrica RVM Contract ID: `0.0.6779400`
-- GreenPoints HTS Token ID: `0.0.6919030`
+Configure Firebase using the existing `NEXT_PUBLIC_FIREBASE_*` and Firebase Admin variables.
 
-## Judge & Mentor Quick Links
+Configure Algorand server access with:
+
+```bash
+ALGORAND_NETWORK=testnet
+ALGORAND_GREENAFRICA_APP_ID=
+GREENAFRICA_OPERATOR_MNEMONIC=
+GREENAFRICA_DEFAULT_RVM_ID=RVM-IFITNESS-ORCHID-001
+
+# Optional custom endpoints
+ALGOD_SERVER=
+ALGOD_PORT=
+ALGOD_TOKEN=
+INDEXER_SERVER=
+INDEXER_PORT=
+INDEXER_TOKEN=
+```
+
+Never expose `GREENAFRICA_OPERATOR_MNEMONIC` through a `NEXT_PUBLIC_*` variable.
+
+## Algorand Contract Setup
+
+```bash
+cd algorand
+npm install
+npm run build
+```
+
+Deployment sequence:
+
+1. Compile and test on Algorand LocalNet.
+2. Deploy the application to TestNet.
+3. Save the application ID as `ALGORAND_GREENAFRICA_APP_ID`.
+4. Register the operator and pilot RVM IDs.
+5. Run a real test recycling session and verify the transaction/event through Algorand tooling.
+6. Test duplicate-session rejection and redemption.
+7. Move to MainNet only after the end-to-end path is stable.
+
+## Current Algorand Deployment Status
+
+- Contract source: `algorand/src/GreenAfrica.algo.ts`
+- Initial target: Algorand TestNet
+- Application ID: pending deployment
+- Green Points ASA ID: not used in the current application-accounting model
+
+No deployment ID is documented until a real deployment has been completed and verified.
+
+## Project Entry Points
 
 - Consumer UX: `webapp/src/app`
-- Smart Contract Logic: `contract/contracts/GreenAfrica.sol`
-- Machine Vision Pipeline: `rvm_api/app`
-- Field Ops Mobile App: `rvm/app`
+- Algorand contract: `algorand/src/GreenAfrica.algo.ts`
+- Algorand integration guide: `algorand/README.md`
+- Machine vision pipeline: `rvm_api/app`
+- Field-operations mobile app: `rvm/app`
+- Marketing website: `website/src/pages`
 
-## Roadmap Highlights
+## Roadmap
 
-- Deploy 5 pilot machines across Lagos transit hubs with sponsor-backed reward pools.
-- Launch SMS fallback for low-end devices, mirroring Hedera balances via Firebase functions.
-- Expand HCS analytics with carbon-equivalent calculations for ESG-grade reporting.
+- Compile and test the Algorand application on LocalNet.
+- Deploy the application to Algorand TestNet.
+- Connect real RVM acceptance events directly to Algorand application calls.
+- Add Indexer-driven recycler and sponsor analytics.
+- Deploy pilot machines across Lagos transit and high-traffic locations.
+- Add SMS fallback for users on low-end devices.
+- Expand carbon-equivalent and ESG-grade reporting.
+- Evaluate an Algorand Standard Asset for Green Points if transferable rewards become necessary.
