@@ -50,8 +50,8 @@ const steps = [
     number: "04",
     title: "Record",
     paragraphs: [
-      "The verified deposit is signed on the device and queued locally. When the machine has connectivity, the record is submitted to Hedera's consensus network. Because records are hash-chained on the device before they're sent, a gap in the network can't be used to quietly insert, alter or delete a deposit after the fact.",
-      "What ends up on the ledger: a timestamp, a machine identifier, a material classification and a weight. What doesn't: anyone's personal details.",
+      "The verified deposit is signed on the device and queued locally. When the machine has connectivity, the backend submits the recycling session to Green Africa's Algorand application. Unique session IDs prevent duplicate rewards, while a hash of the evidence payload provides an independently verifiable link to the off-chain record.",
+      "What ends up on the ledger: opaque recycler and machine identifiers, PET and points accounting, the session identifier and a receipt hash. What doesn't: anyone's raw personal details.",
     ],
   },
   {
@@ -74,7 +74,7 @@ const steps = [
     number: "06",
     title: "Reconcile",
     paragraphs: [
-      "Every bale carries back to the deposits that made it. Machine-level records roll up to route level, route to hub, hub to shipment. When a tonne leaves the hub, the ledger can account for where it came from.",
+      "Every bale carries back to the deposits that made it. Machine-level records roll up to route level, route to hub, hub to shipment. When a tonne leaves the hub, Algorand-backed deposit records can account for where it came from.",
       "That reconciliation is the product. The plastic is just what it's made of.",
     ],
     image: imgReconcile,
