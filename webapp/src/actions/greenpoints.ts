@@ -1,8 +1,11 @@
 'use server';
 
-import { mintGreenPoints, burnGreenPoints, getTokenBalance } from '@/lib/ethers/token-client';
-import { mintGreenPointsHedera, burnGreenPointsHedera, getUserAccountId } from '@/lib/hedera/token-service';
-import { recordDepositOnBlockchain, redeemPointsOnBlockchain, getUserFromBlockchain } from '@/lib/ethers/client';
+import {
+  adjustPointsOnAlgorand,
+  getRecyclerOnAlgorand,
+  recordDepositOnAlgorand,
+  redeemPointsOnAlgorand,
+} from '@/lib/algorand/client';
 import { getUserAdmin } from '@/lib/firebase/admin-firestore';
 
 export interface GreenPointsResult {
@@ -14,369 +17,225 @@ export interface GreenPointsResult {
 }
 
 /**
- * Mint Green Points for a user and record deposit on contract
+ * Award Green Points for an accepted recycling session.
+ * Algorand application state is the authoritative blockchain balance.
  */
 export async function mintPointsForUser(
   uid: string,
   points: number,
-  sessionId?: string
+  sessionId?: string,
 ): Promise<GreenPointsResult> {
   try {
     if (!uid || points <= 0) {
-      return {
-        success: false,
-        error: 'Invalid parameters: uid and positive points required',
-      };
+      return { success: false, error: 'Invalid parameters: uid and positive points required' };
     }
 
-    // Get user info from Firebase to get their EVM address and Green ID
     const user = await getUserAdmin(uid);
     if (!user) {
-      return {
-        success: false,
-        error: 'User not found',
-      };
+      return { success: false, error: 'User not found' };
     }
 
-    if (!user.evmAddress) {
-      return {
-        success: false,
-        error: 'User does not have an EVM address',
-      };
-    }
+    const finalSessionId =
+      sessionId || `session_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+    const rvmId = process.env.GREENAFRICA_DEFAULT_RVM_ID || 'RVM-IFITNESS-ORCHID-001';
 
-    // Generate session ID if not provided
-    const finalSessionId = sessionId || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-    // Get user's Hedera Account ID for token operations
-    const userAccountId = await getUserAccountId(uid);
-    if (!userAccountId) {
-      // Fallback to ethers.js if no Hedera account ID available
-      console.warn(`No Hedera Account ID for user ${uid}, falling back to ethers.js minting`);
-      
-      const mintResult = await mintGreenPoints(user.evmAddress, points);
-      if (!mintResult.success) {
-        console.warn('Error minting Green Points with ethers.js:', mintResult.error);
-        return {
-          success: false,
-          error: `Failed to mint tokens: ${mintResult.error}`,
-        };
-      }
-      
-      // Record deposit on Green Africa contract
-      const depositResult = await recordDepositOnBlockchain(
-        user.greenId, // recyclerId
-        '0x52564d2d494649544e4553532d4f52434849442d303031000000000000000000', // rvmId (provided constant)
-        points, // petCount (same as points)
-        points, // pointsAwarded
-        '', // s3URI (empty string as requested)
-        finalSessionId // sessionId
-      );
-
-      if (!depositResult.success) {
-        console.warn('Token minted but deposit recording failed:', depositResult.error);
-        // Don't fail the entire operation since tokens were minted successfully
-      }
-
-      return {
-        success: true,
-        message: `Successfully minted ${points} Green Points (via ethers.js)`,
-        transactionHash: mintResult.transactionHash,
-      };
-    }
-
-    // Use Hedera SDK for minting (preferred method)
-    console.log(`Minting ${points} Green Points for user ${userAccountId} using Hedera SDK`);
-    const hederaMintResult = await mintGreenPointsHedera(userAccountId, points);
-    if (!hederaMintResult.success) {
-      console.warn('Error minting Green Points with Hedera SDK:', hederaMintResult.error);
-      return {
-        success: false,
-        error: `Failed to mint tokens with Hedera SDK: ${hederaMintResult.error}`,
-      };
-    }
-
-    // Record deposit on Green Africa contract
-    const depositResult = await recordDepositOnBlockchain(
-      user.greenId, // recyclerId
-      '0x52564d2d494649544e4553532d4f52434849442d303031000000000000000000', // rvmId (provided constant)
-      points, // petCount (same as points)
-      points, // pointsAwarded
-      '', // s3URI (empty string as requested)
-      finalSessionId // sessionId
+    const result = await recordDepositOnAlgorand(
+      user.greenId,
+      rvmId,
+      points,
+      points,
+      `${user.greenId}:${finalSessionId}`,
+      finalSessionId,
     );
 
-    if (!depositResult.success) {
-      console.warn('Token minted but deposit recording failed:', depositResult.error);
-      // Don't fail the entire operation since tokens were minted successfully
+    if (!result.success) {
+      return {
+        success: false,
+        error: `Failed to record Green Points on Algorand: ${result.error}`,
+      };
     }
 
     return {
       success: true,
-      message: `Successfully minted ${points} Green Points (via Hedera SDK)`,
-      transactionHash: hederaMintResult.transactionId,
+      message: `Successfully awarded ${points} Green Points on Algorand`,
+      transactionHash: result.transactionId,
     };
   } catch (error) {
-    console.error('Error minting points for user:', error?.toString());
+    console.error('Error awarding Green Points on Algorand:', error);
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to mint points for user',
+      error: error instanceof Error ? error.message : 'Failed to award Green Points',
     };
   }
 }
 
 /**
- * Burn Green Points for a user and call contract redeem
+ * Deduct Green Points for a redemption through the Algorand application.
  */
 export async function burnPointsForUser(
   uid: string,
   points: number,
   rewardType: string,
   destination: string,
-  redemptionId: string
+  redemptionId: string,
 ): Promise<GreenPointsResult> {
   try {
     if (!uid || points <= 0 || !rewardType || !destination || !redemptionId) {
-      return {
-        success: false,
-        error: 'Invalid parameters: all fields are required',
-      };
+      return { success: false, error: 'Invalid parameters: all fields are required' };
     }
 
-    // Get user info from Firebase to get their EVM address and Green ID
     const user = await getUserAdmin(uid);
     if (!user) {
+      return { success: false, error: 'User not found' };
+    }
+
+    const state = await getRecyclerOnAlgorand(user.greenId);
+    if (!state) {
+      return { success: false, error: 'Recycler not found in Algorand application' };
+    }
+
+    if (state.points < BigInt(points)) {
       return {
         success: false,
-        error: 'User not found',
+        error: `Insufficient balance. Current: ${state.points}, Required: ${points}`,
       };
     }
 
-    if (!user.evmAddress) {
-      return {
-        success: false,
-        error: 'User does not have an EVM address',
-      };
-    }
-
-    // Check if user has sufficient token balance
-    const balanceResult = await getTokenBalance(user.evmAddress);
-    if (!balanceResult.success) {
-      return {
-        success: false,
-        error: `Failed to check balance: ${balanceResult.error}`,
-      };
-    }
-
-    const currentBalance = parseFloat(balanceResult.balance || '0');
-    if (currentBalance < points) {
-      return {
-        success: false,
-        error: `Insufficient balance. Current: ${currentBalance}, Required: ${points}`,
-      };
-    }
-
-    // Get user's Hedera Account ID for token operations
-    const userAccountId = await getUserAccountId(uid);
-    let burnTransactionHash: string | undefined;
-
-    if (!userAccountId) {
-      // Fallback to ethers.js if no Hedera account ID available
-      console.warn(`No Hedera Account ID for user ${uid}, falling back to ethers.js burning`);
-      
-      const burnResult = await burnGreenPoints(user.evmAddress, points);
-      if (!burnResult.success) {
-        return {
-          success: false,
-          error: `Failed to burn tokens with ethers.js: ${burnResult.error}`,
-        };
-      }
-      burnTransactionHash = burnResult.transactionHash;
-    } else {
-      // Use Hedera SDK for burning (preferred method)
-      console.log(`Burning ${points} Green Points for user ${userAccountId} using Hedera SDK`);
-      const hederaBurnResult = await burnGreenPointsHedera(userAccountId, points);
-      if (!hederaBurnResult.success) {
-        console.warn('Error burning Green Points with Hedera SDK:', hederaBurnResult.error);
-        return {
-          success: false,
-          error: `Failed to burn tokens with Hedera SDK: ${hederaBurnResult.error}`,
-        };
-      }
-      burnTransactionHash = hederaBurnResult.transactionId;
-    }
-
-    // Call contract redeem points
-    const redeemResult = await redeemPointsOnBlockchain(
-      user.greenId, // recyclerId
+    const result = await redeemPointsOnAlgorand(
+      user.greenId,
       points,
       rewardType,
       destination,
-      redemptionId
+      redemptionId,
     );
 
-    if (!redeemResult.success) {
-      console.warn('Tokens burned but contract redeem failed:', redeemResult.error);
-      // Don't fail the entire operation since tokens were burned successfully
+    if (!result.success) {
+      return {
+        success: false,
+        error: `Failed to redeem Green Points on Algorand: ${result.error}`,
+      };
     }
 
-    const method = userAccountId ? 'Hedera SDK' : 'ethers.js';
     return {
       success: true,
-      message: `Successfully burned ${points} Green Points for redemption (via ${method})`,
-      transactionHash: burnTransactionHash,
+      message: `Successfully redeemed ${points} Green Points on Algorand`,
+      transactionHash: result.transactionId,
     };
   } catch (error) {
-    console.error('Error burning points for user:', error);
+    console.error('Error redeeming Green Points on Algorand:', error);
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to burn points for user',
+      error: error instanceof Error ? error.message : 'Failed to redeem Green Points',
     };
   }
 }
 
-/**
- * Get user's Green Points balance from blockchain
- */
+export async function adjustPointsForUser(
+  uid: string,
+  points: number,
+  add: boolean,
+): Promise<GreenPointsResult> {
+  try {
+    if (!uid || points <= 0) {
+      return { success: false, error: 'Invalid parameters' };
+    }
+
+    const user = await getUserAdmin(uid);
+    if (!user) {
+      return { success: false, error: 'User not found' };
+    }
+
+    const result = await adjustPointsOnAlgorand(user.greenId, points, add);
+    return result.success
+      ? {
+          success: true,
+          message: `Green Points ${add ? 'added' : 'deducted'} on Algorand`,
+          transactionHash: result.transactionId,
+        }
+      : { success: false, error: result.error };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to adjust Green Points',
+    };
+  }
+}
+
 export async function getUserPointsFromBlockchain(uid: string): Promise<GreenPointsResult> {
   try {
     if (!uid) {
-      return {
-        success: false,
-        error: 'User ID is required',
-      };
+      return { success: false, error: 'User ID is required' };
     }
 
-    // Get user info from Firebase to get their EVM address
     const user = await getUserAdmin(uid);
     if (!user) {
-      return {
-        success: false,
-        error: 'User not found',
-      };
+      return { success: false, error: 'User not found' };
     }
 
-    if (!user.evmAddress) {
-      return {
-        success: false,
-        error: 'User does not have an EVM address',
-      };
-    }
-
-    // Get token balance
-    const balanceResult = await getTokenBalance(user.evmAddress);
-    if (!balanceResult.success) {
-      return {
-        success: false,
-        error: `Failed to get balance: ${balanceResult.error}`,
-      };
+    const state = await getRecyclerOnAlgorand(user.greenId);
+    if (!state) {
+      return { success: false, error: 'Recycler not found in Algorand application' };
     }
 
     return {
       success: true,
-      balance: balanceResult.balance,
-      message: `Current balance: ${balanceResult.balance} Green Points`,
+      balance: state.points.toString(),
+      message: `Current balance: ${state.points} Green Points`,
     };
   } catch (error) {
-    console.error('Error getting user points from blockchain:', error);
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to get user points from blockchain',
+      error: error instanceof Error ? error.message : 'Failed to get Green Points balance',
     };
   }
 }
 
-/**
- * Get user's Green Points balance by EVM address
- */
-export async function getPointsBalanceByAddress(evmAddress: string): Promise<GreenPointsResult> {
+export async function getPointsBalanceByGreenId(greenId: string): Promise<GreenPointsResult> {
   try {
-    if (!evmAddress) {
-      return {
-        success: false,
-        error: 'EVM address is required',
-      };
+    if (!greenId) {
+      return { success: false, error: 'Green ID is required' };
     }
 
-    // Get token balance
-    const balanceResult = await getTokenBalance(evmAddress);
-    if (!balanceResult.success) {
-      return {
-        success: false,
-        error: `Failed to get balance: ${balanceResult.error}`,
-      };
+    const state = await getRecyclerOnAlgorand(greenId);
+    if (!state) {
+      return { success: false, error: 'Recycler not found in Algorand application' };
     }
 
     return {
       success: true,
-      balance: balanceResult.balance,
-      message: `Current balance: ${balanceResult.balance} Green Points`,
+      balance: state.points.toString(),
+      message: `Current balance: ${state.points} Green Points`,
     };
   } catch (error) {
-    console.error('Error getting points balance by address:', error);
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Failed to get points balance by address',
+      error: error instanceof Error ? error.message : 'Failed to get Green Points balance',
     };
   }
 }
 
-/**
- * Get user points both from contract and token balance (for comparison/debugging)
- */
 export async function getUserPointsComparison(uid: string): Promise<{
-  tokenBalance: GreenPointsResult;
-  contractPoints: { success: boolean; points?: number; error?: string; };
+  blockchainPoints: GreenPointsResult;
+  firestorePoints: { success: boolean; points?: number; error?: string };
 }> {
   try {
     const user = await getUserAdmin(uid);
     if (!user) {
       return {
-        tokenBalance: { success: false, error: 'User not found' },
-        contractPoints: { success: false, error: 'User not found' },
-      };
-    }
-
-    // Get token balance
-    const tokenBalance = await getUserPointsFromBlockchain(uid);
-
-    // Get points from contract
-    let contractPoints: { success: boolean; points?: number; error?: string; } = { success: false };
-    
-    try {
-      const blockchainUser = await getUserFromBlockchain(user.greenId);
-      if (blockchainUser) {
-        contractPoints = {
-          success: true,
-          points: Number(blockchainUser.points),
-        };
-      } else {
-        contractPoints = {
-          success: false,
-          error: 'User not found on blockchain contract',
-        };
-      }
-    } catch (error) {
-      contractPoints = {
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to get contract points',
+        blockchainPoints: { success: false, error: 'User not found' },
+        firestorePoints: { success: false, error: 'User not found' },
       };
     }
 
     return {
-      tokenBalance,
-      contractPoints,
+      blockchainPoints: await getUserPointsFromBlockchain(uid),
+      firestorePoints: { success: true, points: user.totalPoints },
     };
   } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
     return {
-      tokenBalance: { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      },
-      contractPoints: { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      },
+      blockchainPoints: { success: false, error: message },
+      firestorePoints: { success: false, error: message },
     };
   }
 }
