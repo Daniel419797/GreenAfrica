@@ -1,0 +1,111 @@
+name: GreenAfrica CI
+
+on:
+  push:
+    branches:
+      - main
+      - agent/add-algorand
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  algorand:
+    name: Algorand contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        working-directory: algorand
+        run: npm install
+      - name: Compile contract
+        working-directory: algorand
+        run: npm run build
+      - name: Run contract tests
+        if: ${{ hashFiles('algorand/test/GreenAfrica.test.ts') != '' }}
+        working-directory: algorand
+        run: npm test
+
+  webapp:
+    name: Next.js webapp
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        working-directory: webapp
+        run: npm install
+      - name: Lint
+        working-directory: webapp
+        run: npm run lint
+      - name: Build
+        working-directory: webapp
+        env:
+          NEXT_PUBLIC_FIREBASE_API_KEY: test
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: test.firebaseapp.com
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: greenafrica-ci
+          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: greenafrica-ci.appspot.com
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "1"
+          NEXT_PUBLIC_FIREBASE_APP_ID: "1:1:web:test"
+          ALGORAND_NETWORK: testnet
+          ALGORAND_GREENAFRICA_APP_ID: "1"
+          GREENAFRICA_OPERATOR_MNEMONIC: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon invest"
+          GREENAFRICA_DEFAULT_RVM_ID: RVM-CI-001
+        run: npm run build
+
+  website:
+    name: Astro website
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci
+      - name: Build
+        working-directory: website
+        run: npm run build
+
+  rvm-mobile:
+    name: RVM mobile lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: rvm/package-lock.json
+      - name: Install dependencies
+        working-directory: rvm
+        run: npm ci
+      - name: Lint
+        working-directory: rvm
+        run: npm run lint
+
+  rvm-api:
+    name: RVM API syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        working-directory: rvm_api
+        run: pip install -r requirements.txt
+      - name: Compile Python sources
+        working-directory: rvm_api
+        run: python -m compileall -q app main.py
