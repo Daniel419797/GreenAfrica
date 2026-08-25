@@ -1,0 +1,11 @@
+# Replace path with the immutable dataset release directory.
+path: /data/greenafrica-rvm-detector-v1
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: bottle
+  1: can
+  2: hand
+  3: other_object
