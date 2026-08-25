@@ -1,0 +1,8 @@
+ultralytics>=8.3,<9
+onnx>=1.17,<2
+onnxruntime>=1.20,<2
+torch>=2.5,<3
+torchvision>=0.20,<1
+numpy>=1.26,<3
+Pillow>=10,<12
+PyYAML>=6,<7
