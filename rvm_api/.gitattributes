@@ -1,2 +1,8 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Production AI weights are binary release artifacts. Keep them out of normal
+# Git object history when the repository stores models directly.
+models/*.onnx filter=lfs diff=lfs merge=lfs -text
+training/artifacts/**/*.pt filter=lfs diff=lfs merge=lfs -text
+training/artifacts/**/*.onnx filter=lfs diff=lfs merge=lfs -text
