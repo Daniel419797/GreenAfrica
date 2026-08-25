@@ -95,7 +95,7 @@ jobs:
         run: npm run lint
 
   rvm-api:
-    name: RVM API tests
+    name: RVM API and AI safety tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -107,7 +107,7 @@ jobs:
         run: pip install -r requirements.txt
       - name: Compile Python sources
         working-directory: rvm_api
-        run: python -m compileall -q app main.py
+        run: python -m compileall -q app training main.py
       - name: Run unit tests
         working-directory: rvm_api
         run: python -m unittest discover -s tests -v
