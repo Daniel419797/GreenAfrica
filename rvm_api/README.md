@@ -1,44 +1,131 @@
 # GreenAfrica RVM API
 
-The RVM API is the edge service that runs with a GreenAfrica reverse vending machine. It handles camera capture, bottle-acceptance detection, QR/session events and the machine-facing API used by the rest of the platform.
+The RVM API is the edge service that runs with a GreenAfrica reverse vending machine. It handles camera capture, production AI verification, QR/session events and the machine-facing API used by the rest of the platform.
 
-The Python service itself is intentionally blockchain-neutral. After it verifies an accepted bottle session, the GreenAfrica backend submits the corresponding recycling record to the Algorand application.
+The Python service is blockchain-neutral. Only after a bottle passes the AI acceptance policy does the backend receive an accepted recycling session and submit the corresponding record to Algorand.
 
-## Stack
-
-- FastAPI
-- Uvicorn
-- OpenCV
-- NumPy
-- WebSockets
-- QR code generation
-
-## Flow
+## Production AI flow
 
 ```text
 Camera
   |
   v
-OpenCV detector
+OpenCV motion pre-filter              <- compute trigger only; cannot award points
   |
-  | accepted bottle
   v
-RVM API event
+YOLO ONNX object detector
+  |-- bottle
+  |-- can
+  |-- hand
+  `-- other object
   |
-  +--> session / QR payload
-  +--> optional evidence metadata
+  | bottle candidate in physical gate ROI
+  v
+ONNX material classifier
+  |-- PET clear / PET coloured        <- accepted material classes
+  |-- glass / HDPE / aluminum / other <- rejected
+  |
+  v
+Temporal tracker
+  |-- repeated positive frames
+  |-- minimum physical motion
+  `-- one acceptance per track
+  |
+  v
+Verified PET event + model evidence
   |
   v
 GreenAfrica backend
   |
   v
 Algorand application
-  |-- validates active RVM
-  |-- rejects duplicate session ID
-  |-- updates PET total
-  |-- awards Green Points
-  `-- emits audit event
 ```
+
+The previous motion-only detector is no longer authoritative. Motion merely wakes AI inference. Missing models, bad model hashes, inference errors, low confidence, non-PET material, insufficient temporal evidence and static detections all fail closed.
+
+## Runtime stack
+
+- FastAPI / Uvicorn
+- OpenCV / NumPy
+- ONNX Runtime
+- YOLO-compatible ONNX object detection
+- calibrated ONNX material classification
+- deterministic temporal tracking and duplicate suppression
+- WebSockets / QR generation
+
+## Model security and versioning
+
+Production reads `models/manifest.json`. The manifest pins:
+
+- detector and classifier versions;
+- exact class order;
+- input size;
+- calibrated confidence thresholds;
+- detector IoU threshold;
+- SHA-256 digest of each ONNX artifact.
+
+The service verifies the files before loading them. Set `RVM_AI_FAIL_STARTUP_IF_UNAVAILABLE=true` in production to prevent the RVM from becoming ready when its model release is missing or invalid.
+
+Training and release tooling lives in `training/`. It includes deterministic YOLO fine-tuning, a MobileNetV3 material classifier with imbalance handling and confidence calibration, held-out evaluation, ONNX export and immutable manifest generation. See `training/README.md`.
+
+## Production environment
+
+```text
+RVM_AI_ENABLED=true
+RVM_AI_FAIL_STARTUP_IF_UNAVAILABLE=true
+RVM_AI_REQUIRE_MODEL_HASHES=true
+RVM_AI_MODEL_MANIFEST=models/manifest.json
+RVM_AI_EXECUTION_PROVIDER=auto
+RVM_AI_ALLOWED_OBJECT_LABELS=bottle
+RVM_AI_ALLOWED_PET_LABELS=pet_clear,pet_colored
+
+RVM_AI_MIN_ROI_SCORE=0.30
+RVM_AI_MIN_BOX_AREA_PX=1200
+RVM_AI_REQUIRED_POSITIVE_FRAMES=4
+RVM_AI_VOTE_WINDOW=6
+RVM_AI_TRACK_TTL_SECONDS=1.5
+RVM_AI_MIN_TRACK_MOTION_PX=10
+RVM_AI_INFERENCE_MIN_INTERVAL_S=0.10
+
+RVM_ALLOW_MANUAL_EVENTS=false
+RVM_ADMIN_TOKEN=<strong random operator secret>
+```
+
+`auto` prefers TensorRT, then CUDA, then CPU when available.
+
+## Operator/control security
+
+The following write/debug operations require `X-RVM-Admin-Token` and a configured `RVM_ADMIN_TOKEN`:
+
+- manual accept/reject;
+- reset;
+- ROI mutation;
+- background reseed;
+- raw debug/overlay image endpoints.
+
+Manual accept/reject is additionally disabled unless `RVM_ALLOW_MANUAL_EVENTS=true`. Production should leave it false.
+
+## Health endpoints
+
+- `GET /health/live` — process liveness.
+- `GET /health/ready` — camera + required AI readiness. Returns HTTP 503 when not ready.
+- `GET /ai/status` — model versions, provider, inference counters and last decision.
+- `GET /status` — kiosk/recycling state including last AI evidence.
+
+## Recycling evidence
+
+An accepted AI event includes evidence such as:
+
+- object label and detector confidence;
+- PET material label and classifier confidence;
+- bounding box and ROI score;
+- temporal positive-vote count;
+- physical track motion;
+- model/detector/classifier release versions;
+- detector/classifier latency;
+- track ID.
+
+That evidence can be included in the existing receipt/media payload before the backend hashes it and calls Algorand `recordDeposit`.
 
 ## Local setup
 
@@ -50,34 +137,14 @@ pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
-On Windows PowerShell, activate the environment with:
+Windows PowerShell:
 
 ```powershell
 .venv\Scripts\Activate.ps1
 ```
 
-## Responsibilities
+Without a valid `models/manifest.json` and matching ONNX files, AI startup is marked unavailable and automatic recycling acceptance remains disabled. That is intentional; production code must never silently fall back to motion-only rewards.
 
-The RVM service is responsible for:
+## Algorand boundary
 
-- camera and region-of-interest capture
-- bottle-entry detection
-- event timing and cooldown logic
-- generating machine/session events
-- exposing operator and diagnostic endpoints
-- supplying the backend with the data needed to build an Algorand recycling receipt
-
-It should not hold the GreenAfrica Algorand operator mnemonic. Blockchain signing stays in the server/backend layer rather than on a public machine or browser client.
-
-## Algorand integration boundary
-
-When an accepted session reaches the backend, the server uses the webapp Algorand client to call `recordDeposit` with:
-
-- recycler Green ID
-- RVM ID
-- PET count
-- Green Points awarded
-- unique session ID
-- hash of the evidence/receipt payload
-
-The Algorand application is the authoritative blockchain record. Firebase can mirror the resulting balance and transaction ID for the user interface.
+The RVM service must not hold the GreenAfrica Algorand operator mnemonic. Blockchain signing remains in the backend. After a verified session reaches the backend, the server calls `recordDeposit` with the recycler Green ID, RVM ID, PET count, Green Points, unique session ID and hash of the evidence/receipt payload.
