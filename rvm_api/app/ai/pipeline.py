@@ -9,6 +9,13 @@ from pathlib import Path
 import numpy as np
 
 from .classifier import OnnxMaterialClassifier
+from .metrics import (
+    observe_classifier_ms,
+    observe_detector_ms,
+    record_accept,
+    record_decision,
+    set_ready,
+)
 from .model_registry import ModelRegistry, ModelRegistryError
 from .schemas import AiDecision, BoundingBox, Candidate
 from .tracker import TemporalTracker
@@ -71,6 +78,7 @@ class AiPipeline:
         self.total_accepts = 0
         self.total_rejects = 0
         self._lock = threading.RLock()
+        set_ready(False)
 
     def start(self) -> None:
         with self._lock:
@@ -101,6 +109,7 @@ class AiPipeline:
                 self.ready = True
                 self.error = None
                 self.tracker.reset()
+                set_ready(True)
                 logger.info(
                     "RVM AI ready: registry=%s detector=%s classifier=%s",
                     self.registry.version,
@@ -112,6 +121,7 @@ class AiPipeline:
                 self.error = f"{type(exc).__name__}: {exc}"
                 self.detector = None
                 self.classifier = None
+                set_ready(False)
                 logger.exception("RVM AI failed to initialize")
 
     def stop(self) -> None:
@@ -120,6 +130,7 @@ class AiPipeline:
             self.detector = None
             self.classifier = None
             self.tracker.reset()
+            set_ready(False)
 
     def update_roi(self, center: tuple[int, int], radius: int) -> None:
         with self._lock:
@@ -131,7 +142,6 @@ class AiPipeline:
         cx, cy = box.center
         rx, ry = self.roi_center
         distance = math.hypot(cx - rx, cy - ry)
-        # 1.0 at the gate center, 0.0 once the object center is beyond 1.5 radii.
         denom = max(1.0, self.roi_radius * 1.5)
         return max(0.0, 1.0 - distance / denom)
 
@@ -158,10 +168,12 @@ class AiPipeline:
                     reason="model_unavailable",
                     evidence={"error": self.error},
                 )
+                record_decision(reason=self.last_decision.reason, accepted=False)
                 return self.last_decision
 
             try:
                 detections = self.detector.detect(frame)
+                observe_detector_ms(self.detector.last_stats.latency_ms)
                 candidates: list[Candidate] = []
 
                 for detection in detections:
@@ -174,6 +186,7 @@ class AiPipeline:
                         continue
 
                     classification = self.classifier.classify(self._crop(frame, detection.box))
+                    observe_classifier_ms(self.classifier.last_latency_ms)
                     accepted_material = (
                         classification.label.lower() in self.allowed_pet_labels
                         and classification.confidence >= self.registry.classifier.confidence_threshold
@@ -221,6 +234,8 @@ class AiPipeline:
                         classifier_version=self.registry.classifier.version,
                         evidence=evidence,
                     )
+                    record_decision(reason=self.last_decision.reason, accepted=True)
+                    record_accept(candidate.classification.label, track.mean_confidence)
                     return self.last_decision
 
                 reason = "no_candidate"
@@ -241,9 +256,9 @@ class AiPipeline:
                         "detector_latency_ms": round(self.detector.last_stats.latency_ms, 2),
                     },
                 )
+                record_decision(reason=self.last_decision.reason, accepted=False)
                 return self.last_decision
             except Exception as exc:
-                # A runtime inference failure is a rejection, never an acceptance.
                 self.total_rejects += 1
                 self.error = f"{type(exc).__name__}: {exc}"
                 self.last_candidates = []
@@ -253,6 +268,7 @@ class AiPipeline:
                     model_version=self.registry.version if self.registry else None,
                     evidence={"error": self.error},
                 )
+                record_decision(reason=self.last_decision.reason, accepted=False)
                 logger.exception("RVM AI inference failed")
                 return self.last_decision
 
