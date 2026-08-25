@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.factory import ai_pipeline, detector
+from app.metrics_router import router as metrics_router
 from app.router import router
 from app.settings import settings
 from app.ws import router as ws_router
@@ -32,3 +33,4 @@ app = FastAPI(
 
 app.include_router(router)
 app.include_router(ws_router)
+app.include_router(metrics_router)
