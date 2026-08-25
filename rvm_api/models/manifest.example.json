@@ -1,0 +1,24 @@
+{
+  "version": "2026.08.1",
+  "detector": {
+    "name": "greenafrica-rvm-yolo",
+    "path": "pet_detector.onnx",
+    "sha256": "REPLACE_WITH_64_CHAR_SHA256_AFTER_TRAINING",
+    "version": "2026.08.1",
+    "input_size": 640,
+    "classes": ["bottle", "can", "hand", "other_object"],
+    "confidence_threshold": 0.62,
+    "iou_threshold": 0.45
+  },
+  "classifier": {
+    "name": "greenafrica-pet-material",
+    "path": "pet_material_classifier.onnx",
+    "sha256": "REPLACE_WITH_64_CHAR_SHA256_AFTER_TRAINING",
+    "version": "2026.08.1",
+    "input_size": 224,
+    "classes": ["aluminum", "glass", "hdpe", "other", "pet_clear", "pet_colored"],
+    "confidence_threshold": 0.78,
+    "mean": [0.485, 0.456, 0.406],
+    "std": [0.229, 0.224, 0.225]
+  }
+}
