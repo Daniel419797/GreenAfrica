@@ -27,9 +27,12 @@ class Detector:
         self.mog2 = None
         self.last_count_time = 0.0
         self.last_inference_time = 0.0
+        self.last_frame_time = 0.0
         self.frame_buf = deque(maxlen=1)
         self.debug_last_thresh = None
         self.last_ai_decision = None
+        self._roi_mask_cache: Optional[np.ndarray] = None
+        self._roi_mask_signature: tuple[int, int, int, int, int] | None = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
@@ -42,6 +45,16 @@ class Detector:
         mask = np.zeros((h, w), dtype=np.uint8)
         cv2.circle(mask, (cx, cy), r, 255, -1)
         return mask
+
+    def _roi_mask(self, frame: np.ndarray) -> np.ndarray:
+        h, w = frame.shape[:2]
+        signature = (h, w, settings.ROI_CX, settings.ROI_CY, settings.ROI_R)
+        if self._roi_mask_cache is None or self._roi_mask_signature != signature:
+            self._roi_mask_cache = self.circular_mask(
+                frame, settings.ROI_CX, settings.ROI_CY, settings.ROI_R
+            )
+            self._roi_mask_signature = signature
+        return self._roi_mask_cache
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -86,7 +99,6 @@ class Detector:
             print("[FATAL] Camera not available")
             return
 
-        mask = self.circular_mask(frame, settings.ROI_CX, settings.ROI_CY, settings.ROI_R)
         g0 = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         g0 = cv2.GaussianBlur(g0, (21, 21), 0)
         self.bg = g0.copy()
@@ -106,6 +118,8 @@ class Detector:
                 time.sleep(0.02)
                 continue
 
+            self.last_frame_time = time.time()
+            mask = self._roi_mask(frame)
             g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             g = cv2.GaussianBlur(g, (21, 21), 0)
 
